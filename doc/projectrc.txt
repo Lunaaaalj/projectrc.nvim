@@ -1,0 +1,259 @@
+*projectrc.txt*  Per-project settings, edited in a float
+
+==============================================================================
+CONTENTS                                                           *projectrc*
+
+  1. Introduction ........................................ |projectrc-intro|
+  2. Setup ............................................... |projectrc-setup|
+  3. The float ........................................... |projectrc-float|
+  4. Settings ......................................... |projectrc-settings|
+  5. Native files ....................................... |projectrc-native|
+  6. C-family indentation ......................... |projectrc-clang-indent|
+  7. Trust ............................................... |projectrc-trust|
+  8. Integrations ................................ |projectrc-integrations|
+  9. API ................................................... |projectrc-api|
+ 10. Highlights .................................... |projectrc-highlights|
+
+==============================================================================
+1. INTRODUCTION                                              *projectrc-intro*
+
+projectrc.nvim keeps per-project settings in `.nvim/settings.json` at the
+project root, in the spirit of VS Code's `.vscode/settings.json`, and edits
+them in a float (|:ProjectRC|). Settings that another tool reads are stored in
+that tool's own file instead (|projectrc-native|), so every tool agrees.
+
+The project root is the nearest directory holding the settings file's
+directory (`.nvim`), else one of `markers` (in order), else the file's
+directory.
+
+Requires Neovim 0.11+. Run |:checkhealth| projectrc to check the tools.
+
+==============================================================================
+2. SETUP                                                     *projectrc-setup*
+
+Call `require("projectrc").setup(opts)` at startup (with lazy.nvim:
+`lazy = false`), since the appliers must see the first |FileType|. Options and
+defaults: >lua
+
+  require("projectrc").setup({
+    -- the settings file, relative to the project root
+    file = ".nvim/settings.json",
+    -- root markers after the settings dir, in priority order
+    markers = { ".git", "compile_commands.json", "CMakeLists.txt" },
+    -- C-family indent follows clang-format (|projectrc-clang-indent|)
+    clang_indent = true,
+    -- clang-format style when no .clang-format applies (inline YAML or a
+    -- style name); also the seed of a .clang-format created from the float
+    fallback_style = "{BasedOnStyle: LLVM, IndentWidth: 4}",
+    -- runs build.cmd/run/test: fun(cmd, { root, cwd, env, kind })
+    -- default: `botright 12new` + a terminal job
+    runner = nil,
+    -- float without a background (transparent terminals): bool or function
+    transparent = false,
+    width = 100,
+    highlights = {},
+    -- extra settings appended to the schema (|projectrc-custom|)
+    settings = {},
+    -- float-local keys; false disables one, a list binds several
+    keys = {
+      edit = { "<CR>", "l" }, reset = "x", scope = "f", json = "e",
+      trust = "T", next_tab = "<Tab>", prev_tab = "<S-Tab>",
+      close = { "q", "<Esc>" },
+    },
+  })
+<
+==============================================================================
+3. THE FLOAT                                        *projectrc-float* *:ProjectRC*
+
+:ProjectRC              Open the float for the current buffer's project.
+:ProjectRC build        Run `build.cmd` through `runner`.
+:ProjectRC run          Run `build.run`.
+:ProjectRC test         Run `build.test`.
+:ProjectRC trust        Trust the settings file (|projectrc-trust|).
+:ProjectRC json         Edit the settings file directly.
+
+Tabs (Editor / Format / LSP / Build / Debug) are in the winbar; `1`-`9` jump
+to one. Each row shows the value in effect and where it comes from:
+
+  ●  project        set in the settings file
+  ◆  [ft]           set for this filetype only
+  ▣  .clang-format  stored in that tool's file
+  ○  default        inherited (nothing set)
+  ⊘  untrusted      set, but ignored until trusted
+  →                 owned elsewhere (C-family indent: the Format tab)
+
+Keys (see `keys` in |projectrc-setup|):
+  <CR> l      Edit: toggle a bool, pick an enum, type an int/string (empty
+              resets), or edit a list/object as JSON in a float (`:w` saves).
+  x           Reset to the inherited value (removes the key where it's set).
+  f           Toggle the filetype scope: edits write `"[ft]"` overrides.
+  e           Open the settings file.
+  T           Trust the settings file.
+  <Tab>       Next / previous tab (<S-Tab>).
+  q <Esc>     Close.
+
+The footer shows the selected setting's description. Edits apply at once.
+
+==============================================================================
+4. SETTINGS                                               *projectrc-settings*
+
+Editor (per-filetype)
+  editor.indent         int     'shiftwidth', 'softtabstop'
+  editor.tabs           bool    'noexpandtab', 'tabstop' = indent
+  editor.textwidth      int     'textwidth'
+  editor.colorcolumn    string  'colorcolumn'
+  editor.wrap           bool    'wrap'
+  editor.spell          bool    'spell'
+
+Format
+  format.on_save        bool    per-filetype; see |projectrc-integrations|
+  format.formatters     list    per-filetype conform formatter names
+  clang_format.style    enum    BasedOnStyle            (.clang-format)
+  clang_format.indent   int     IndentWidth             (.clang-format)
+  clang_format.use_tab  enum    UseTab                  (.clang-format)
+  clang_format.column_limit int ColumnLimit             (.clang-format)
+
+LSP
+  lsp.disabled          list    servers detached in this project
+  clangd.std            string  -std= in CompileFlags.Add       (.clangd)
+  clangd.flags          list    CompileFlags.Add                (.clangd)
+  clangd.compile_commands_dir   CompileFlags.CompilationDatabase (.clangd)
+  clangd.query_driver   string  --query-driver (exec; restarts clangd)
+  pyright.venv          string  venv dir → python.pythonPath (exec)
+  pyright.type_checking enum    python.analysis.typeCheckingMode
+
+Build (exec)
+  build.cmd / build.run / build.test   string   shell commands
+  build.cwd             string  working dir, relative to the root
+  build.env             object  extra environment
+
+Debug (exec)
+  debug.configurations  JSON    nvim-dap launch configs: `name`, `program`,
+                                `args`, `cwd`, `env`, `type` (default by
+                                filetype: codelldb / python). Paths are
+                                relative to the root.
+
+                                                            *projectrc-custom*
+Add settings with `setup({ settings = { ... } })`. Each needs `key`, `tab`,
+`type` (bool | int | string | enum | list | dict | json) and `label`;
+optional `desc`, `values` (enum), `ft`, `exec` and `inherited =
+fun(ctx) -> value, origin`. A new `tab` is added after the built-in ones.
+Read values with |projectrc.get()| and react to |ProjectRCChanged|.
+
+==============================================================================
+5. NATIVE FILES                                             *projectrc-native*
+
+  .clang-format  Top-level `Key: value` lines of the first YAML document are
+                 replaced in place (a trailing comment is kept) or added;
+                 comments, other keys and other documents (`Language: Proto`)
+                 are left alone. A new file starts from `fallback_style`.
+  .clangd        Values go in a separate YAML document between
+                 `# >>> projectrc.nvim` and `# <<< projectrc.nvim` at the end
+                 of the file; clangd merges all `---` fragments.
+
+The first change to a file the plugin didn't create shows the diff and asks.
+After that, a header comment marks the file and it isn't asked again.
+
+==============================================================================
+6. C-FAMILY INDENTATION                               *projectrc-clang-indent*
+
+With `clang_indent = true`, on |FileType| c, cpp, objc, objcpp, cuda and
+proto, the plugin runs `clang-format --dump-config --assume-filename=<file>`
+(async, cached per style file and mtime) and sets 'shiftwidth',
+'softtabstop', 'tabstop' and 'expandtab' from `IndentWidth`, `TabWidth` and
+`UseTab`. Saving a `.clang-format` re-applies to open buffers below it.
+
+Without a `.clang-format`, `--style=<fallback_style>` is passed; hand
+|projectrc.clang_format_args()| to your formatter so it does the same.
+(`--fallback-style` only accepts a style name, not inline YAML.)
+
+==============================================================================
+7. TRUST                                                     *projectrc-trust*
+
+Settings marked `exec` (build commands, environment, debug configs, clangd's
+query driver, the pyright venv) read as nil until the settings file is
+trusted in the same hash database as 'exrc' (|vim.secure.read()|). Running a
+build command asks (ignore / view / deny / allow) when needed.
+
+Edits made through the float keep a trusted file trusted. They never trust a
+file that was untrusted before the write, so changing an indent in a freshly
+cloned repository doesn't approve its build commands. A hand edit changes the
+hash, so the file must be trusted again.
+
+==============================================================================
+8. INTEGRATIONS                                       *projectrc-integrations*
+
+Applied by the plugin itself: editor options, C-family indent, pyright
+settings (`workspace/didChangeConfiguration` on attach and change), and
+`lsp.disabled` (detaches on attach). The rest need one hook each:
+
+conform.nvim >lua
+  format_on_save = function(buf)
+    local project = require("projectrc").format_opts(buf, true)
+    if not project then return end
+    return vim.tbl_extend("force", { timeout_ms = 2000, lsp_format = "fallback" }, project)
+  end,
+  formatters = {
+    clang_format = { prepend_args = function(_, ctx)
+      return require("projectrc").clang_format_args(ctx.filename)
+    end },
+  },
+<
+clangd (--query-driver) >lua
+  vim.lsp.config("clangd", { cmd = require("projectrc").clangd_cmd })
+<
+nvim-dap: project configs are inserted first on |BufEnter| and when lazy.nvim
+loads nvim-dap; call |projectrc.dap_sync()| from your dap config otherwise.
+
+==============================================================================
+9. API                                                         *projectrc-api*
+
+                                                           *projectrc.setup()*
+setup({opts})               See |projectrc-setup|.
+                                                            *projectrc.open()*
+open()                      Open the float.
+                                                           *projectrc.build()*
+build({kind})               "cmd" | "run" | "test", through `runner`.
+                                                             *projectrc.get()*
+get({buf}, {key}, {untrusted})
+                            Value of {key} for {buf} and its origin ("project",
+                            "[ft]", ".clang-format", ".clangd"), or nil. `exec`
+                            keys are nil while untrusted unless {untrusted}.
+get_at({root}, {ft}, {key}, {untrusted})                  *projectrc.get_at()*
+                            The same for a root and filetype.
+effective({buf}, {key})                                *projectrc.effective()*
+                            Value in effect (project, else inherited), origin,
+                            and whether it came from the project.
+set({root}, {key}, {value}, {ft})                            *projectrc.set()*
+                            Set (nil removes) {key}; {ft} writes "[ft]".
+                            Returns true, or false and a reason.
+root({buf-or-path})                                         *projectrc.root()*
+format_opts({buf}, {on_save})                        *projectrc.format_opts()*
+                            false = skip format-on-save; else a table of extra
+                            conform.format() options ({ formatters = ... }).
+clangd_cmd({dispatchers}, {config})                   *projectrc.clangd_cmd()*
+clang_format_args({path})                      *projectrc.clang_format_args()*
+dap_sync({buf})                                         *projectrc.dap_sync()*
+trust({root})                                              *projectrc.trust()*
+json({root})                                                *projectrc.json()*
+
+                                                            *ProjectRCChanged*
+`User ProjectRCChanged` fires after any change, with `data = { root }`.
+
+==============================================================================
+10. HIGHLIGHTS                                           *projectrc-highlights*
+
+All are `default` links; override with `highlights` or |:highlight|.
+
+  ProjectRCNormal   NormalFloat     float text (no bg when `transparent`)
+  ProjectRCBorder   FloatBorder
+  ProjectRCTitle    Title           float title, project path
+  ProjectRCAccent   Function        project-set markers
+  ProjectRCMuted    Comment         inherited values, hints, footer
+  ProjectRCWarn     DiagnosticWarn  untrusted
+  ProjectRCSel      CursorLine      the selected row
+
+The float sets 'winblend' 0: a global 'winblend' over a float without a
+background blends against black and draws a solid block.
+
+ vim:tw=78:ts=8:ft=help:norl:
